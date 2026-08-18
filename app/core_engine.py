@@ -6,12 +6,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 
 
-load_dotenv(
-    os.path.join(
-        os.path.dirname(__file__),
-        ".env.local"
-    )
-)
+load_dotenv(".env.local")
 
 
 # ============================================================
@@ -143,7 +138,7 @@ RUN_ONCE = os.getenv("RUN_ONCE", "false").lower() == "true"
 CONFIRMATION_WAIT = 600
 
 HISTORY_FILE = os.path.join(
-    os.path.dirname(__file__),
+    os.getcwd(),
     "market_history.json"
 )
 
