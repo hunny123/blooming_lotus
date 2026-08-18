@@ -3222,6 +3222,10 @@ def scan(send_notifications=True):
 
     started = time.time()
 
+    print(
+        "Starting Binance API scan...",
+        flush=True
+    )
 
     print()
 
@@ -3559,7 +3563,8 @@ def scan(send_notifications=True):
 
     print(
         f"Scan completed in "
-        f"{elapsed:.1f}s"
+        f"{elapsed:.1f}s",
+        flush=True
     )
 
     return results
@@ -3639,19 +3644,36 @@ def main():
 
         try:
 
+            print(
+                "[1/2] Starting initial analysis...",
+                flush=True
+            )
+
             results = scan()
 
             print(
-                "Waiting 10 minutes for confirmation..."
+                "Initial analysis completed. "
+                "Waiting 10 minutes for confirmation...",
+                flush=True
             )
 
             time.sleep(CONFIRMATION_WAIT)
+
+            print(
+                "[2/2] Starting confirmation analysis...",
+                flush=True
+            )
 
             results = scan()
 
             save_market_history(results)
 
             clear_market_history()
+
+            print(
+                "Confirmation analysis completed.",
+                flush=True
+            )
 
         except KeyboardInterrupt:
 
@@ -3662,8 +3684,11 @@ def main():
         except Exception as e:
 
             print(
-                f"\nScanner error: {e}"
+                f"\nScanner error: {e}",
+                flush=True
             )
+
+            raise
 
         return
 
