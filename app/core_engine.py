@@ -42,6 +42,14 @@ load_dotenv(".env.local")
 
 BASE_URL = "https://fapi.binance.com"
 
+BINANCE_BASE_URLS = [
+    os.getenv("BINANCE_BASE_URL", BASE_URL),
+    "https://fapi1.binance.com",
+    "https://fapi2.binance.com",
+    "https://fapi3.binance.com",
+    "https://fapi4.binance.com"
+]
+
 
 # ------------------------------------------------------------
 # Scanner
@@ -172,58 +180,78 @@ last_telegram_signal = {}
 
 def api_get(endpoint, params=None):
 
-    for attempt in range(3):
+    last_error = None
 
-        try:
+    for base_url in BINANCE_BASE_URLS:
 
-            response = session.get(
+        for attempt in range(3):
 
-                BASE_URL + endpoint,
+            try:
 
-                params=params,
+                response = session.get(
 
-                timeout=15
+                    base_url + endpoint,
 
-            )
+                    params=params,
 
+                    timeout=15
 
-            if response.status_code == 429:
-
-                retry_after = response.headers.get(
-                    "Retry-After",
-                    "5"
                 )
+
+
+                if response.status_code == 451:
+
+                    print(
+                        f"Binance host blocked (451): {base_url}. "
+                        "Trying another host..."
+                    )
+
+                    break
+
+
+                if response.status_code == 429:
+
+                    retry_after = response.headers.get(
+                        "Retry-After",
+                        "5"
+                    )
+
+                    print(
+                        f"Rate limited. "
+                        f"Waiting {retry_after}s..."
+                    )
+
+                    time.sleep(
+                        float(retry_after)
+                    )
+
+                    continue
+
+
+                response.raise_for_status()
+
+                return response.json()
+
+
+            except Exception as error:
+
+                last_error = error
 
                 print(
-                    f"Rate limited. "
-                    f"Waiting {retry_after}s..."
+                    f"API error: {error} "
+                    f"| {base_url} retry {attempt + 1}/3"
                 )
 
-                time.sleep(
-                    float(retry_after)
-                )
+                if attempt == 2:
 
-                continue
+                    break
 
-
-            response.raise_for_status()
-
-            return response.json()
+                time.sleep(2)
 
 
-        except Exception as e:
+    if last_error:
 
-            print(
-                f"API error: {e} "
-                f"| retry {attempt + 1}/3"
-            )
-
-            if attempt == 2:
-
-                raise
-
-            time.sleep(2)
-
+        raise last_error
 
     raise RuntimeError(
         "Binance API request failed"
