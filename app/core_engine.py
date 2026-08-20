@@ -55,7 +55,11 @@ BINANCE_BASE_URLS = [
 # Scanner
 # ------------------------------------------------------------
 
-TOP_N = 30
+TOP_N = 50
+
+LOW_CANDIDATE_N = 20
+
+ALL_TIME_LOW_PROXIMITY_PCT = 5.0
 
 MIN_24H_VOLUME = 20_000_000
 
@@ -128,6 +132,18 @@ TP2_R = 3.0
 
 MAX_SL_DISTANCE_PCT = 5.0
 
+HIGH_RETURN_MIN_PCT = 15.0
+
+HIGH_RETURN_MAX_PCT = 20.0
+
+TARGET_LEVERAGED_RETURN_PCT = 20.0
+
+HIGHER_LEVERAGED_RETURN_PCT = 30.0
+
+LEVERAGE_2X = 2.0
+
+LEVERAGE_3X = 3.0
+
 DEFAULT_LEVERAGE = "2x-3x"
 
 
@@ -172,6 +188,10 @@ session.headers.update({
 pending_signals = {}
 
 last_telegram_signal = {}
+
+confirmation_symbols = None
+
+confirmation_low_symbols = None
 
 
 # ============================================================
@@ -230,7 +250,24 @@ def api_get(endpoint, params=None):
 
                 response.raise_for_status()
 
-                return response.json()
+                try:
+
+                    return response.json()
+
+                except ValueError as error:
+
+                    last_error = RuntimeError(
+                        "Binance returned a non-JSON response from "
+                        f"{base_url} (HTTP {response.status_code}). "
+                        "The runner network may be blocked."
+                    )
+
+                    print(
+                        f"Invalid Binance response from {base_url}: "
+                        f"{error}. Trying another host..."
+                    )
+
+                    break
 
 
             except Exception as error:
@@ -473,6 +510,47 @@ def get_24h_tickers():
         }
 
     return result
+
+
+def get_all_time_low(symbol):
+
+    lowest = None
+    start_time = 0
+
+    while True:
+
+        candles = api_get(
+            "/fapi/v1/klines",
+            {
+                "symbol": symbol,
+                "interval": "1d",
+                "limit": 1500,
+                "startTime": start_time
+            }
+        )
+
+        if not candles:
+
+            break
+
+        batch_low = min(
+            float(candle[3])
+            for candle in candles
+        )
+
+        lowest = (
+            batch_low
+            if lowest is None
+            else min(lowest, batch_low)
+        )
+
+        if len(candles) < 1500:
+
+            break
+
+        start_time = int(candles[-1][0]) + 1
+
+    return lowest
 
 
 # ============================================================
@@ -1164,7 +1242,8 @@ def location_info(
     support,
     resistance,
     month_high,
-    month_low
+    month_low,
+    all_time_low=None
 ):
 
     result = {
@@ -1191,7 +1270,13 @@ def location_info(
             None,
 
         "month_high_distance":
-            None
+            None,
+
+        "all_time_low_distance":
+            None,
+
+        "near_all_time_low":
+            False
 
     }
 
@@ -1265,6 +1350,27 @@ def location_info(
             ] = True
 
 
+    if all_time_low:
+
+        distance = (
+            (price - all_time_low)
+            / price
+        ) * 100
+
+        result[
+            "all_time_low_distance"
+        ] = distance
+
+        if (
+            0 <= distance
+            <= ALL_TIME_LOW_PROXIMITY_PCT
+        ):
+
+            result[
+                "near_all_time_low"
+            ] = True
+
+
     if month_high:
 
         distance = (
@@ -1329,6 +1435,28 @@ def generate_signal(data):
     trend1d = data["trend_1d"]
 
     loc = data["location"]
+
+    long_crowded = (
+        funding > 0.05
+        and oi > 0.5
+        and mom > 0.30
+    )
+
+    short_crowded = (
+        funding < -0.05
+        and oi > 0.5
+        and mom < -0.30
+    )
+
+    if long_crowded:
+        warnings.append(
+            "long crowding risk: positive funding, rising OI, and rising price"
+        )
+
+    if short_crowded:
+        warnings.append(
+            "short crowding risk: negative funding, rising OI, and falling price"
+        )
 
 
     # ========================================================
@@ -1842,6 +1970,26 @@ def generate_signal(data):
 
     if long_score > short_score:
 
+        if long_crowded and loc["near_resistance"]:
+            warnings.append(
+                "LONG rejected: crowded longs are near resistance"
+            )
+
+            return {
+                "signal": "WAIT",
+                "confidence": round(
+                    max(long_score, short_score) / total * 100,
+                    1
+                ),
+                "type": "CROWDED LONG",
+                "long_score": round(long_score, 1),
+                "short_score": round(short_score, 1),
+                "reasons": [
+                    "long setup is vulnerable to a crowded-position reversal"
+                ],
+                "warnings": warnings
+            }
+
         confidence = (
             long_score
             /
@@ -1923,6 +2071,23 @@ def generate_signal(data):
         /
         total
     ) * 100
+
+    if short_crowded and loc["near_support"]:
+        warnings.append(
+            "SHORT rejected: crowded shorts are near support"
+        )
+
+        return {
+            "signal": "WAIT",
+            "confidence": round(confidence, 1),
+            "type": "CROWDED SHORT",
+            "long_score": round(long_score, 1),
+            "short_score": round(short_score, 1),
+            "reasons": [
+                "short setup is vulnerable to a crowded-position reversal"
+            ],
+            "warnings": warnings
+        }
 
 
     if near_high:
@@ -2074,6 +2239,18 @@ def calculate_trade_plan(result):
 
                 tp3 = resistance
 
+        projected_target = tp3 or tp2
+
+        projected_return_pct = (
+            (projected_target - entry)
+            /
+            entry
+        ) * 100
+
+        return_at_2x_pct = projected_return_pct * LEVERAGE_2X
+
+        return_at_3x_pct = projected_return_pct * LEVERAGE_3X
+
 
         return {
 
@@ -2097,6 +2274,28 @@ def calculate_trade_plan(result):
 
             "tp3":
                 tp3,
+
+            "projected_return_pct":
+                projected_return_pct,
+
+            "return_at_2x_pct":
+                return_at_2x_pct,
+
+            "return_at_3x_pct":
+                return_at_3x_pct,
+
+            "twenty_percent_setup":
+                return_at_2x_pct >= TARGET_LEVERAGED_RETURN_PCT,
+
+            "twenty_percent_leverage":
+                "2x-3x"
+                if return_at_2x_pct >= TARGET_LEVERAGED_RETURN_PCT
+                else "3x"
+                if return_at_3x_pct >= TARGET_LEVERAGED_RETURN_PCT
+                else None,
+
+            "higher_profit_setup":
+                return_at_3x_pct >= HIGHER_LEVERAGED_RETURN_PCT,
 
             "direction":
                 "LONG"
@@ -2166,6 +2365,18 @@ def calculate_trade_plan(result):
 
                 tp3 = support
 
+        projected_target = tp3 or tp2
+
+        projected_return_pct = (
+            (entry - projected_target)
+            /
+            entry
+        ) * 100
+
+        return_at_2x_pct = projected_return_pct * LEVERAGE_2X
+
+        return_at_3x_pct = projected_return_pct * LEVERAGE_3X
+
 
         return {
 
@@ -2189,6 +2400,28 @@ def calculate_trade_plan(result):
 
             "tp3":
                 tp3,
+
+            "projected_return_pct":
+                projected_return_pct,
+
+            "return_at_2x_pct":
+                return_at_2x_pct,
+
+            "return_at_3x_pct":
+                return_at_3x_pct,
+
+            "twenty_percent_setup":
+                return_at_2x_pct >= TARGET_LEVERAGED_RETURN_PCT,
+
+            "twenty_percent_leverage":
+                "2x-3x"
+                if return_at_2x_pct >= TARGET_LEVERAGED_RETURN_PCT
+                else "3x"
+                if return_at_3x_pct >= TARGET_LEVERAGED_RETURN_PCT
+                else None,
+
+            "higher_profit_setup":
+                return_at_3x_pct >= HIGHER_LEVERAGED_RETURN_PCT,
 
             "direction":
                 "SHORT"
@@ -2377,6 +2610,21 @@ def telegram_message(r):
         f"{CONFIRMATION_SCANS}"
     )
 
+    if plan.get("twenty_percent_leverage"):
+
+        lines.append(
+            "🚀 <b>20% RETURN SETUP: "
+            f"{plan['twenty_percent_leverage']} LEVERAGE"
+            " (PROJECTED)</b>"
+        )
+
+    if plan.get("higher_profit_setup"):
+
+        lines.append(
+            "🔥 <b>HIGHER PROFIT SETUP: "
+            "30%+ AT 3X (PROJECTED)</b>"
+        )
+
 
     lines.append("")
 
@@ -2521,6 +2769,26 @@ def telegram_message(r):
         f"(+3R)"
     )
 
+    lines.append(
+        f"Projected return: "
+        f"<b>{plan['projected_return_pct']:+.2f}% price move</b>"
+    )
+
+    lines.append(
+        f"At 2x: <b>{plan['return_at_2x_pct']:+.2f}%</b> | "
+        f"At 3x: <b>{plan['return_at_3x_pct']:+.2f}%</b>"
+    )
+
+    lines.append(
+        f"Projected return: "
+        f"<b>{plan['projected_return_pct']:+.2f}%</b>"
+    )
+
+    lines.append(
+        f"At 2x: <b>{plan['return_at_2x_pct']:+.2f}%</b> | "
+        f"At 3x: <b>{plan['return_at_3x_pct']:+.2f}%</b>"
+    )
+
 
     if plan["tp3"]:
 
@@ -2631,6 +2899,50 @@ def send_pending_telegram(result):
     send_telegram(message)
 
 
+def low_to_high_reversal_message(result):
+
+    lines = [
+        "🟡 <b>LOW TO HIGH REVERSAL CAN COME</b>",
+        "",
+        f"<b>{escape_html(result['symbol'])}</b>",
+        f"Price: ${format_price(result['price'])}",
+        f"All-time low: ${format_price(result['all_time_low'])}",
+        f"Distance from all-time low: "
+        f"{result['location']['all_time_low_distance']:.2f}%",
+        "",
+        f"5m: {result['fast_structure']} | "
+        f"15m: {result['confirm_structure']}",
+        f"Momentum: {result['momentum']:+.2f}%",
+        f"Volume: {result['volume_strength']:+.1f}%",
+        f"OI: {result['oi_change']:+.2f}% ({result['oi_direction']})",
+        "",
+        "Early reversal watch only - not a confirmed trade signal.",
+        "Signal only - no Binance order execution."
+    ]
+
+    return "\n".join(lines)
+
+
+def send_low_to_high_reversal_telegram(result):
+
+    symbol = result["symbol"]
+    key = (symbol, "LOW_TO_HIGH_REVERSAL")
+
+    if key in last_telegram_signal:
+
+        return
+
+    message = low_to_high_reversal_message(result)
+
+    if send_telegram(message):
+
+        last_telegram_signal[key] = True
+
+        print(
+            f"Telegram sent: {symbol} LOW TO HIGH REVERSAL"
+        )
+
+
 def save_market_history(results):
 
     try:
@@ -2638,17 +2950,22 @@ def save_market_history(results):
         with open(
             HISTORY_FILE,
             "r",
+
+        print(
+            f"Projected:   "
+            f"{plan['projected_return_pct']:+.2f}% price move"
+        )
+
+        print(
+            f"At leverage: "
+            f"2x={plan['return_at_2x_pct']:+.2f}% | "
+            f"3x={plan['return_at_3x_pct']:+.2f}%"
+        )
             encoding="utf-8"
         ) as file:
-
-            history = json.load(file)
-
-    except (
-        FileNotFoundError,
+            "HIGHER PROFIT SETUP: 30%+ AT 3X (PROJECTED)"
+        ) if plan["higher_profit_setup"] else None
         json.JSONDecodeError
-    ):
-
-        history = {}
 
 
     timestamp = time.time()
@@ -2765,7 +3082,8 @@ def send_confirmed_telegram(result):
 def analyze_symbol(
     symbol,
     ticker,
-    funding
+    funding,
+    all_time_low=None
 ):
 
     candles_5m = get_klines(
@@ -2922,8 +3240,8 @@ def analyze_symbol(
         resistance,
 
         month_high,
-
-        month_low
+        month_low,
+        all_time_low
 
     )
 
@@ -2987,6 +3305,9 @@ def analyze_symbol(
         "month_low":
             month_low,
 
+        "all_time_low":
+            all_time_low,
+
         "location":
             loc
 
@@ -2998,13 +3319,29 @@ def analyze_symbol(
     )
 
 
-    return {
+    result = {
 
         **data,
 
         **signal
 
     }
+
+    result[
+        "low_to_high_reversal"
+    ] = (
+        all_time_low is not None
+        and loc["near_all_time_low"]
+        and fast_structure == "BULLISH"
+        and confirm_structure == "BULLISH"
+        and mom > 0
+        and (
+            volume >= GOOD_VOLUME_PCT
+            or oi_change > 0
+        )
+    )
+
+    return result
 
 
 # ============================================================
@@ -3164,6 +3501,25 @@ def print_signal(r):
             f"(3R)"
         )
 
+        print(
+            f"Projected:   "
+            f"{plan['projected_return_pct']:+.2f}%"
+        )
+
+        print(
+            f"At leverage: "
+            f"2x {plan['return_at_2x_pct']:+.2f}% | "
+            f"3x {plan['return_at_3x_pct']:+.2f}%"
+        )
+
+        if plan["twenty_percent_leverage"]:
+
+            print(
+                f"20% RETURN SETUP: "
+                f"{plan['twenty_percent_leverage']} LEVERAGE "
+                "(PROJECTED)"
+            )
+
 
         if plan["tp3"]:
 
@@ -3218,7 +3574,13 @@ def print_signal(r):
 # SCAN
 # ============================================================
 
-def scan(send_notifications=True):
+def scan(
+    send_notifications=True,
+    send_pending_notifications=True
+):
+
+    global confirmation_symbols
+    global confirmation_low_symbols
 
     started = time.time()
 
@@ -3295,13 +3657,56 @@ def scan(send_notifications=True):
     )
 
 
-    symbols = symbols[
+    volume_symbols = symbols[
         :TOP_N
+    ]
+
+    low_symbols = [
+        symbol
+        for symbol in sorted(
+            symbols,
+            key=lambda item: tickers[item]["change"]
+        )
+        if symbol not in volume_symbols
+    ][:LOW_CANDIDATE_N]
+
+    selected_symbols = volume_symbols + low_symbols
+
+    if RUN_ONCE:
+
+        if confirmation_symbols is None:
+
+            confirmation_symbols = selected_symbols
+            confirmation_low_symbols = low_symbols
+
+        else:
+
+            print(
+                "Reusing first-scan token universe for confirmation."
+            )
+
+            low_symbols = [
+                symbol
+                for symbol in confirmation_low_symbols
+                if symbol in confirmation_symbols
+            ]
+
+        symbols = confirmation_symbols
+
+    else:
+
+        symbols = selected_symbols
+
+    volume_symbols = [
+        symbol
+        for symbol in symbols
+        if symbol not in low_symbols
     ]
 
 
     print(
-        f"Scanning {len(symbols)} symbols..."
+        f"Scanning {len(volume_symbols)} volume leaders plus "
+        f"{len(low_symbols)} low-watchlist symbols..."
     )
 
 
@@ -3334,13 +3739,22 @@ def scan(send_notifications=True):
                 continue
 
 
+            all_time_low = (
+                get_all_time_low(symbol)
+                if symbol in low_symbols
+                else None
+            )
+
+
             result = analyze_symbol(
 
                 symbol,
 
                 tickers[symbol],
 
-                funding[symbol]
+                funding[symbol],
+
+                all_time_low
 
             )
 
@@ -3350,6 +3764,23 @@ def scan(send_notifications=True):
                 results.append(
                     result
                 )
+
+                if (
+                    symbol in low_symbols
+                    and result["low_to_high_reversal"]
+                ):
+
+                    print()
+
+                    print(
+                        f"Low-to-high reversal watch: {symbol}"
+                    )
+
+                    if send_notifications:
+
+                        send_low_to_high_reversal_telegram(
+                            result
+                        )
 
 
         except Exception as e:
@@ -3493,7 +3924,6 @@ def scan(send_notifications=True):
         in ["LONG", "SHORT"]
 
         and
-
         r["confidence"]
         >= MIN_CONFIDENCE
 
@@ -3501,7 +3931,6 @@ def scan(send_notifications=True):
 
         r["symbol"]
         in pending_signals
-
     ]
 
 
@@ -3544,7 +3973,7 @@ def scan(send_notifications=True):
 
             )
 
-            if send_notifications:
+            if send_notifications and send_pending_notifications:
 
                 send_pending_telegram(r)
 
@@ -3664,7 +4093,9 @@ def main():
                 flush=True
             )
 
-            results = scan()
+            results = scan(
+                send_pending_notifications=False
+            )
 
             save_market_history(results)
 
