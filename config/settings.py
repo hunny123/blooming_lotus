@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
 
+from strategy.config import load_strategy_config
+
 
 load_dotenv(
     os.path.join(
@@ -8,6 +10,8 @@ load_dotenv(
         ".env.local"
     )
 )
+
+STRATEGY_CONFIG = load_strategy_config()
 
 
 # ============================================================
@@ -48,23 +52,30 @@ BASE_URL = "https://fapi.binance.com"
 # Scanner
 # ------------------------------------------------------------
 
-TOP_N = 30
+TOP_N = STRATEGY_CONFIG.scan_top_count
 
-MIN_24H_VOLUME = 20_000_000
+LOW_CANDIDATE_N = STRATEGY_CONFIG.scan_last_count
 
-SCAN_INTERVAL = 300
-# 5 minutes
+MIN_24H_VOLUME = STRATEGY_CONFIG.min_quote_volume
+
+SCAN_INTERVAL = STRATEGY_CONFIG.scan_interval_seconds
+
+REPEAT_SCAN_ENABLED = STRATEGY_CONFIG.repeat_scan_enabled
+
+OBSERVATION_SCAN_ENABLED = STRATEGY_CONFIG.observation_scan_enabled
+
+OBSERVATION_SCAN_INTERVAL_SECONDS = STRATEGY_CONFIG.observation_scan_interval_seconds
 
 
 # ------------------------------------------------------------
 # Confirmation
 # ------------------------------------------------------------
 
-CONFIRMATION_SCANS = 2
+CONFIRMATION_SCANS = STRATEGY_CONFIG.confirmation_scans
 
-MIN_CONFIDENCE = 60
+MIN_CONFIDENCE = STRATEGY_CONFIG.min_confidence
 
-MIN_CONFIRMATION_CONFIDENCE = 60
+MIN_CONFIRMATION_CONFIDENCE = STRATEGY_CONFIG.min_confirmation_confidence
 
 
 # ------------------------------------------------------------
@@ -134,7 +145,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-RUN_ONCE = os.getenv("RUN_ONCE", "false").lower() == "true"
+RUN_ONCE = STRATEGY_CONFIG.run_once
 
 CONFIRMATION_WAIT = 300
 

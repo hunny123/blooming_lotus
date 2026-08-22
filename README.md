@@ -29,7 +29,7 @@ The trend calculation uses EMA 20, EMA 50, and EMA 200. The lower-timeframe stru
 The strategy scores LONG and SHORT evidence from:
 
 - Higher-timeframe trend alignment.
-- 5-minute and 15-minute market structure.
+- 5-minute and 15-minute and 4hour market structure.
 - Short-term momentum.
 - Open-interest direction compared with price movement.
 - Volume compared with the previous 20-candle average.

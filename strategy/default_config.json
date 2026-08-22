@@ -1,0 +1,29 @@
+{
+  "strategy_name": "base",
+  "enabled": true,
+  "scan_top_count": 3,
+  "scan_last_count": 3,
+  "initial_tokens": [
+    {"count": 30, "dir": "top", "timeframe": "24h"},
+    {"count": 30, "dir": "low", "timeframe": "24h"}
+  ],
+  "mandatory_tokens": [],
+  "scan_interval_seconds": 300,
+  "repeat_scan_enabled": true,
+  "observation_scan_enabled": true,
+  "observation_scan_interval_seconds": 60,
+  "max_candidates": 60,
+  "min_quote_volume": 20000000.0,
+  "confirmation_scans": 2,
+  "min_confidence": 60.0,
+  "min_confirmation_confidence": 60.0,
+  "run_once": false,
+  "telegram_enabled": true,
+  "groq_enabled": true,
+  "groq_max_tokens": 5,
+  "groq_debug_logging": true,
+  "gemini_enabled": false,
+  "gemini_model": "gemini-3.6-flash",
+  "gemini_max_tokens": 1024,
+  "gemini_debug_logging": true
+}
