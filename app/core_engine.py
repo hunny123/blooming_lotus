@@ -5,8 +5,12 @@ import requests
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 
+from strategy.config import load_strategy_config
+
 
 load_dotenv(".env.local")
+
+STRATEGY_CONFIG = load_strategy_config()
 
 
 # ============================================================
@@ -55,27 +59,33 @@ BINANCE_BASE_URLS = [
 # Scanner
 # ------------------------------------------------------------
 
-TOP_N = 50
+TOP_N = STRATEGY_CONFIG.scan_top_count
 
-LOW_CANDIDATE_N = 20
+LOW_CANDIDATE_N = STRATEGY_CONFIG.scan_last_count
 
 ALL_TIME_LOW_PROXIMITY_PCT = 5.0
 
-MIN_24H_VOLUME = 20_000_000
+MIN_24H_VOLUME = STRATEGY_CONFIG.min_quote_volume
 
-SCAN_INTERVAL = 300
+SCAN_INTERVAL = STRATEGY_CONFIG.scan_interval_seconds
 # 5 minutes
+
+REPEAT_SCAN_ENABLED = STRATEGY_CONFIG.repeat_scan_enabled
+
+OBSERVATION_SCAN_ENABLED = STRATEGY_CONFIG.observation_scan_enabled
+
+OBSERVATION_SCAN_INTERVAL_SECONDS = STRATEGY_CONFIG.observation_scan_interval_seconds
 
 
 # ------------------------------------------------------------
 # Confirmation
 # ------------------------------------------------------------
 
-CONFIRMATION_SCANS = 2
+CONFIRMATION_SCANS = STRATEGY_CONFIG.confirmation_scans
 
-MIN_CONFIDENCE = 60
+MIN_CONFIDENCE = STRATEGY_CONFIG.min_confidence
 
-MIN_CONFIRMATION_CONFIDENCE = 60
+MIN_CONFIRMATION_CONFIDENCE = STRATEGY_CONFIG.min_confirmation_confidence
 
 
 # ------------------------------------------------------------
@@ -157,7 +167,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-RUN_ONCE = os.getenv("RUN_ONCE", "false").lower() == "true"
+RUN_ONCE = STRATEGY_CONFIG.run_once
 
 CONFIRMATION_WAIT = 600
 
@@ -1437,15 +1447,25 @@ def generate_signal(data):
     loc = data["location"]
 
     long_crowded = (
-        funding > 0.05
-        and oi > 0.5
-        and mom > 0.30
+        funding > 0.08
+        and oi > 1.0
+        and mom > 0.50
+        and (
+            "BULLISH" in trend1h
+            or "BULLISH" in trend4h
+            or "BULLISH" in trend1d
+        )
     )
 
     short_crowded = (
-        funding < -0.05
-        and oi > 0.5
-        and mom < -0.30
+        funding < -0.08
+        and oi > 1.0
+        and mom < -0.50
+        and (
+            "BEARISH" in trend1h
+            or "BEARISH" in trend4h
+            or "BEARISH" in trend1d
+        )
     )
 
     if long_crowded:
@@ -2566,6 +2586,15 @@ def telegram_message(r):
         "🔴"
     )
 
+    crowding = None
+    for warning in r.get("warnings", []):
+        lower_warning = warning.lower()
+        if "long crowding risk" in lower_warning:
+            crowding = "OVERCROWDED LONG"
+            break
+        if "short crowding risk" in lower_warning:
+            crowding = "OVERCROWDED SHORT"
+            break
 
     plan = r.get(
         "trade_plan"
@@ -2579,11 +2608,11 @@ def telegram_message(r):
 
     lines = []
 
+    header = f"{icon} <b>CONFIRMED {r['signal']}</b>"
+    if crowding:
+        header = f"{header} — <b>{crowding}</b>"
 
-    lines.append(
-        f"{icon} <b>CONFIRMED "
-        f"{r['signal']}</b>"
-    )
+    lines.append(header)
 
 
     lines.append("")
@@ -2950,22 +2979,16 @@ def save_market_history(results):
         with open(
             HISTORY_FILE,
             "r",
-
-        print(
-            f"Projected:   "
-            f"{plan['projected_return_pct']:+.2f}% price move"
-        )
-
-        print(
-            f"At leverage: "
-            f"2x={plan['return_at_2x_pct']:+.2f}% | "
-            f"3x={plan['return_at_3x_pct']:+.2f}%"
-        )
             encoding="utf-8"
         ) as file:
-            "HIGHER PROFIT SETUP: 30%+ AT 3X (PROJECTED)"
-        ) if plan["higher_profit_setup"] else None
+            history = json.load(file)
+
+    except (
+        FileNotFoundError,
         json.JSONDecodeError
+    ):
+
+        history = {}
 
 
     timestamp = time.time()
@@ -3518,6 +3541,12 @@ def print_signal(r):
                 f"20% RETURN SETUP: "
                 f"{plan['twenty_percent_leverage']} LEVERAGE "
                 "(PROJECTED)"
+            )
+
+        if plan["higher_profit_setup"]:
+
+            print(
+                "HIGHER PROFIT SETUP: 30%+ AT 3X (PROJECTED)"
             )
 
 
